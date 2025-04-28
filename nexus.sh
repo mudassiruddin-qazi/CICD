@@ -1,85 +1,96 @@
 #!/bin/bash
 
-set -e
+##########################################################################################################
+# Author: Sysadmin                                                                                       #
+# mail: admin@sysadmin.info.pl                                                                           #
+# Use freely                                                                                             #
+# Key Points:                                                                                            #
+# 1. **Root Privileges Check**: The script verifies if it's being run as root.                           #
+# 2. **Package Installation**: It installs necessary packages, including `gnupg` and `curl`.             #
+# 3. **Nexus Repository Installation**: Downloads and installs Nexus Repository Manager.                 #
+# 4. **Java Installation**: Downloads and installs the specified Java version.                           #
+# 5. **Permissions**: Sets the correct ownership and permissions for Nexus directories.                  #
+# 6. **Service Management**: Stops and starts the Nexus service at appropriate points.                   #
+# 7. **OrientDB Console Commands**: Connects to the OrientDB console to update the admin password.       #
+# 8. **Validation**: Uses `curl` to check if the Nexus service is running and accessible.                #
+# This script covers the installation and setup process comprehensively,                                 #
+# including handling dependencies and setting up the necessary environment for Nexus Repository Manager. #
+##########################################################################################################
 
-# Variables
-NEXUS_VERSION="3.43.0-01"   # You can adjust this to newer versions if needed
-NEXUS_USER="nexus"
-INSTALL_DIR="/opt/nexus"
-DATA_DIR="/opt/sonatype-work"
-DOWNLOAD_URL="https://download.sonatype.com/nexus/3/nexus-${NEXUS_VERSION}-unix.tar.gz"
-JAVA_INSTALL_DIR="/usr/lib/jvm/temurin-11-jdk-amd64"
+echo "This quick installer script requires root privileges."
+echo "Checking..."
+if [[ $(/usr/bin/id -u) -ne 0 ]];
+then
+    echo "Not running as root"
+    exit 0
+else
+    echo "Installation continues"
+fi
 
-# Update system
-echo "Updating system..."
-sudo apt-get update -y
-sudo apt-get install -y wget tar apt-transport-https ca-certificates software-properties-common gnupg2
+SUDO=
+if [ "$UID" != "0" ]; then
+    if [ -e /usr/bin/sudo -o -e /bin/sudo ]; then
+        SUDO=sudo
+    else
+        echo "*** This quick installer script requires root privileges."
+        exit 0
+    fi
+fi
 
-# Install Temurin OpenJDK 11
-echo "Installing Temurin OpenJDK 11..."
-wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | sudo gpg --dearmor -o /usr/share/keyrings/adoptium-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/adoptium-archive-keyring.gpg] https://packages.adoptium.net/artifactory/deb bullseye main" | sudo tee /etc/apt/sources.list.d/adoptium.list
-sudo apt-get update -y
-sudo apt-get install -y temurin-11-jdk
+# Install necessary packages
+apt install gnupg gnupg1 gnupg2 -y
+wget -P /etc/apt/sources.list.d/ https://repo.sonatype.com/repository/community-hosted/deb/sonatype-community.list
+sed -i '1i deb [arch=all trusted=yes] https://repo.sonatype.com/repository/community-apt-hosted/ bionic main' /etc/apt/sources.list.d/sonatype-community.list
+sed -i '2s/^/#/' /etc/apt/sources.list.d/sonatype-community.list
+wget -q -O - https://repo.sonatype.com/repository/community-hosted/pki/deb-gpg/DEB-GPG-KEY-Sonatype.asc | apt-key add -
+apt update && apt install nexus-repository-manager -y
 
-# Verify Java
-echo "Verifying Java version..."
-java -version
+# Stop the Nexus Repository Manager service
+systemctl stop nexus-repository-manager.service
 
-# Create Nexus user
-echo "Creating nexus user..."
-sudo id -u ${NEXUS_USER} &>/dev/null || sudo useradd --system --no-create-home --shell /bin/false ${NEXUS_USER}
+# Install Java JDK 8 update 412
+wget https://download.bell-sw.com/java/8u412+9/bellsoft-jdk8u412+9-linux-amd64.deb
+dpkg -i bellsoft-jdk8u412+9-linux-amd64.deb
+apt --fix-broken install -y
+dpkg -i bellsoft-jdk8u412+9-linux-amd64.deb
 
-# Download and install Nexus
-echo "Downloading Nexus ${NEXUS_VERSION}..."
-wget $DOWNLOAD_URL -O /tmp/nexus.tar.gz
+# Set correct ownership and permissions
+chown -R nexus3:nexus3 /opt/sonatype
+chmod -R 750 /opt/sonatype
 
-echo "Extracting Nexus..."
-sudo mkdir -p $INSTALL_DIR
-sudo tar -xzf /tmp/nexus.tar.gz -C $INSTALL_DIR --strip-components=1
+# Start the Nexus Repository Manager service
+systemctl start nexus-repository-manager.service
 
-# Setup data directory
-echo "Setting up Nexus data directory..."
-sudo mkdir -p $DATA_DIR
-sudo chown -R ${NEXUS_USER}:${NEXUS_USER} $INSTALL_DIR $DATA_DIR
+# Install curl
+apt install curl -y
 
-# Configure Nexus to run as specific user
-echo "Configuring Nexus run user..."
-echo "run_as_user=${NEXUS_USER}" | sudo tee $INSTALL_DIR/bin/nexus.rc
+# Extract the first IP address from `hostname -I` and store it in a variable
+IP_ADDRESS=$(hostname -I | awk '{print $1}')
 
-# Set Java 11 explicitly for Nexus
-echo "Setting Java 11 for Nexus inside script..."
-sudo sed -i "s|#INSTALL4J_JAVA_HOME_OVERRIDE=|INSTALL4J_JAVA_HOME_OVERRIDE=${JAVA_INSTALL_DIR}|" $INSTALL_DIR/bin/nexus
+echo "sleep 120 seconds ..."
+sleep 120
 
-# Create a systemd service
-echo "Creating systemd service for Nexus..."
+# Use the IP address variable
+echo "The IP address is: $IP_ADDRESS"
+curl http://$IP_ADDRESS:8081
 
-sudo tee /etc/systemd/system/nexus.service > /dev/null <<EOF
-[Unit]
-Description=Nexus Repository Manager
-After=network.target
+# Stop the Nexus Repository Manager service
+systemctl stop nexus-repository-manager.service
 
-[Service]
-Type=simple
-LimitNOFILE=65536
-User=${NEXUS_USER}
-Group=${NEXUS_USER}
-Environment=JAVA_HOME=${JAVA_INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/bin/nexus run
-WorkingDirectory=${INSTALL_DIR}
-Restart=on-failure
-TimeoutStartSec=600
-
-[Install]
-WantedBy=multi-user.target
+# Execute OrientDB console commands using a here document
+java -jar /opt/sonatype/nexus3/lib/support/nexus-orient-console.jar <<EOF
+connect plocal:/opt/sonatype/sonatype-work/nexus3/db/security admin admin
+select * from user where id = "admin"
+update user SET password="\$shiro1\$SHA-512\$1024\$NE+wqQq/TmjZMvfI7ENh/g==\$V4yPw8T64UQ6GfJfxYq2hLsVrBY8D1v+bktfOxGdt4b/9BthpWPNUy/CBk6V9iA0nHpzYzJFWO8v/tZFtES8CA==" UPSERT WHERE id="admin"
+exit
 EOF
 
-# Reload systemd and start Nexus
-echo "Reloading systemd and starting Nexus..."
-sudo systemctl daemon-reload
-sudo systemctl enable nexus
-sudo systemctl start nexus
+# Set correct ownership and permissions
+chown -R nexus3:nexus3 /opt/sonatype
+chmod -R 750 /opt/sonatype
 
-echo ""
-echo "✅ Nexus Repository Manager installation completed successfully!"
-echo "🌐 Access it at: http://<your-server-ip>:8081"
+# Start the Nexus Repository Manager service
+systemctl start nexus-repository-manager.service
+
+# Check logs with the below command:
+# sudo tail -f /opt/sonatype/sonatype-work/nexus3/log/nexus.log
