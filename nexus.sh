@@ -1,84 +1,85 @@
 #!/bin/bash
 
-# Update the package list
-echo "Updating package list..."
-sudo apt update -y
+set -e
 
-# Install necessary dependencies
-echo "Installing necessary dependencies..."
-sudo apt install -y wget curl tar
+# Variables
+NEXUS_VERSION="3.43.0-01"   # You can adjust this to newer versions if needed
+NEXUS_USER="nexus"
+INSTALL_DIR="/opt/nexus"
+DATA_DIR="/opt/sonatype-work"
+DOWNLOAD_URL="https://download.sonatype.com/nexus/3/nexus-${NEXUS_VERSION}-unix.tar.gz"
+JAVA_INSTALL_DIR="/usr/lib/jvm/temurin-11-jdk-amd64"
 
-# Install OpenJDK 11 manually from Adoptium
-echo "Downloading and installing OpenJDK 11..."
+# Update system
+echo "Updating system..."
+sudo apt-get update -y
+sudo apt-get install -y wget tar apt-transport-https ca-certificates software-properties-common gnupg2
 
-# Download OpenJDK 11
-wget https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.17+8/OpenJDK11U-jdk_x64_linux_hotspot_11.0.17_8.tar.gz
+# Install Temurin OpenJDK 11
+echo "Installing Temurin OpenJDK 11..."
+wget -O - https://packages.adoptium.net/artifactory/api/gpg/key/public | sudo gpg --dearmor -o /usr/share/keyrings/adoptium-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/adoptium-archive-keyring.gpg] https://packages.adoptium.net/artifactory/deb bullseye main" | sudo tee /etc/apt/sources.list.d/adoptium.list
+sudo apt-get update -y
+sudo apt-get install -y temurin-11-jdk
 
-# Extract OpenJDK 11
-tar -xvzf OpenJDK11U-jdk_x64_linux_hotspot_11.0.17_8.tar.gz
-
-# Move to /opt directory
-sudo mv jdk-11.0.17+8 /opt/
-
-# Set JAVA_HOME and PATH in /etc/environment
-echo "Setting up environment variables for Java 11..."
-echo "JAVA_HOME=/opt/jdk-11.0.17+8" | sudo tee -a /etc/environment
-echo "PATH=\$PATH:/opt/jdk-11.0.17+8/bin" | sudo tee -a /etc/environment
-
-# Reload environment variables
-source /etc/environment
-
-# Verify Java installation
-echo "Verifying Java installation..."
+# Verify Java
+echo "Verifying Java version..."
 java -version
 
-# Download Nexus Repository Manager 3.79.1-04
-echo "Downloading Nexus Repository Manager version 3.79.1-04..."
-wget https://download.sonatype.com/nexus/3/nexus-3.79.1-04-linux-x86_64.tar.gz
+# Create Nexus user
+echo "Creating nexus user..."
+sudo id -u ${NEXUS_USER} &>/dev/null || sudo useradd --system --no-create-home --shell /bin/false ${NEXUS_USER}
 
-# Extract Nexus files
+# Download and install Nexus
+echo "Downloading Nexus ${NEXUS_VERSION}..."
+wget $DOWNLOAD_URL -O /tmp/nexus.tar.gz
+
 echo "Extracting Nexus..."
-tar -xvzf nexus-3.79.1-04-linux-x86_64.tar.gz
+sudo mkdir -p $INSTALL_DIR
+sudo tar -xzf /tmp/nexus.tar.gz -C $INSTALL_DIR --strip-components=1
 
-# Move Nexus to /opt
-sudo mv nexus-3.79.1-04 /opt/nexus
+# Setup data directory
+echo "Setting up Nexus data directory..."
+sudo mkdir -p $DATA_DIR
+sudo chown -R ${NEXUS_USER}:${NEXUS_USER} $INSTALL_DIR $DATA_DIR
 
-# Create a symlink for Nexus
-echo "Creating Nexus symlink..."
-sudo ln -s /opt/nexus/bin/nexus /usr/bin/nexus
+# Configure Nexus to run as specific user
+echo "Configuring Nexus run user..."
+echo "run_as_user=${NEXUS_USER}" | sudo tee $INSTALL_DIR/bin/nexus.rc
 
-# Set permissions for Nexus
-echo "Setting permissions for Nexus..."
-sudo chown -R $USER:$USER /opt/nexus
+# Set Java 11 explicitly for Nexus
+echo "Setting Java 11 for Nexus inside script..."
+sudo sed -i "s|#INSTALL4J_JAVA_HOME_OVERRIDE=|INSTALL4J_JAVA_HOME_OVERRIDE=${JAVA_INSTALL_DIR}|" $INSTALL_DIR/bin/nexus
 
-# Create a Nexus service file
-echo "Creating Nexus systemd service..."
-cat <<EOL | sudo tee /etc/systemd/system/nexus.service
+# Create a systemd service
+echo "Creating systemd service for Nexus..."
+
+sudo tee /etc/systemd/system/nexus.service > /dev/null <<EOF
 [Unit]
 Description=Nexus Repository Manager
 After=network.target
 
 [Service]
-Type=forking
+Type=simple
 LimitNOFILE=65536
-ExecStart=/opt/nexus/bin/nexus start
-ExecStop=/opt/nexus/bin/nexus stop
-User=$USER
-Group=$USER
+User=${NEXUS_USER}
+Group=${NEXUS_USER}
+Environment=JAVA_HOME=${JAVA_INSTALL_DIR}
+ExecStart=${INSTALL_DIR}/bin/nexus run
+WorkingDirectory=${INSTALL_DIR}
 Restart=on-failure
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
-EOL
+EOF
 
-# Reload systemd and enable Nexus service
-echo "Enabling Nexus service..."
+# Reload systemd and start Nexus
+echo "Reloading systemd and starting Nexus..."
 sudo systemctl daemon-reload
 sudo systemctl enable nexus
 sudo systemctl start nexus
 
-# Verify Nexus service status
-echo "Verifying Nexus service..."
-sudo systemctl status nexus
-
-echo "Nexus and OpenJDK 11 installation completed."
+echo ""
+echo "✅ Nexus Repository Manager installation completed successfully!"
+echo "🌐 Access it at: http://<your-server-ip>:8081"
