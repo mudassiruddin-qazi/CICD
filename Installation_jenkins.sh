@@ -4,7 +4,7 @@ set -e  # Exit on any error
 
 echo "Updating packages and installing prerequisites..."
 sudo apt-get update
-sudo apt-get install -y wget curl apt-transport-https ca-certificates gnupg git
+sudo apt-get install -y wget curl apt-transport-https ca-certificates gnupg git software-properties-common lsb-release
 
 echo "Installing OpenJDK 17 from Adoptium..."
 sudo mkdir -p /etc/apt/keyrings
@@ -33,8 +33,21 @@ sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plug
 
 echo "Adding Jenkins user to Docker group..."
 sudo usermod -aG docker jenkins
+sudo systemctl restart jenkins
+sudo systemctl status jenkins
 
 echo "Installing kubectl, nfs-common, and GCP SDK plugin..."
 sudo apt-get install -y kubectl nfs-common google-cloud-sdk-gke-gcloud-auth-plugin
+
+echo "Installing Terraform..."
+wget -O- https://apt.releases.hashicorp.com/gpg | \
+    gpg --dearmor | \
+    sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
+    sudo tee /etc/apt/sources.list.d/hashicorp.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y terraform
 
 echo "System setup completed. Reboot recommended."
