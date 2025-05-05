@@ -1,0 +1,56 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(name: 'ENV', choices: ['dev', 'pre-prod', 'prod'], description: 'Choose the environment cluster to delete')
+    }
+
+    environment {
+        GCP_PROJECT_ID = 'lustrous-drake-412814'
+        REGION = 'us-central1'
+    }
+
+    stages {
+        stage('Set Cluster Name') {
+            steps {
+                script {
+                    if (params.ENV == 'dev') {
+                        env.CLUSTER_NAME = "gke-dev-cluster"
+                    } else if (params.ENV == 'pre-prod') {
+                        env.CLUSTER_NAME = "gke-preprod-cluster"
+                    } else if (params.ENV == 'prod') {
+                        env.CLUSTER_NAME = "gke-prod-cluster"
+                    }
+                }
+            }
+        }
+
+        stage('Delete GKE Cluster') {
+            steps {
+                withCredentials([file(credentialsId: 'gcp-service-account-key', variable: 'GCP_KEY_FILE')]) {
+                    script {
+                        sh '''
+                            echo "Activating GCP service account"
+                            gcloud auth activate-service-account --key-file=$GCP_KEY_FILE
+
+                            echo "Setting GCP project and region"
+                            gcloud config set project ''' + env.GCP_PROJECT_ID + '''
+                            gcloud config set compute/region ''' + env.REGION + '''
+
+                            echo "Deleting GKE cluster: ''' + env.CLUSTER_NAME + '''"
+                            gcloud container clusters delete ''' + env.CLUSTER_NAME + ''' \
+                                --region=''' + env.REGION + ''' \
+                                --quiet
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Post Deletion') {
+            steps {
+                echo "✅ GKE cluster '${CLUSTER_NAME}' in '${REGION}' for environment '${ENV}' deleted successfully."
+            }
+        }
+    }
+}
