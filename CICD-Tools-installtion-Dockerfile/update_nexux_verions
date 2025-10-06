@@ -1,0 +1,145 @@
+#!/bin/bash
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# --- Configurable variables ---
+NEXUS_VERSION="3.79.1-04"
+NEXUS_USER="nexus"
+NEXUS_GROUP="nexus"
+INSTALL_DIR="/opt/nexus"
+WORK_DIR="/opt/sonatype-work"
+SERVICE_FILE="/etc/systemd/system/nexus.service"
+DOWNLOAD_URL="https://download.sonatype.com/nexus/3/nexus-${NEXUS_VERSION}-linux-x86_64.tar.gz"
+TMP_TAR="/tmp/nexus-${NEXUS_VERSION}.tar.gz"
+JAVA_PKG="openjdk-17-jdk"
+
+# --- Functions ---
+log() {
+  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+check_root() {
+  if (( EUID != 0 )); then
+    echo "This script must be run as root or via sudo."
+    exit 1
+  fi
+}
+
+install_packages() {
+  log "Updating package index..."
+  apt update -y
+
+  log "Installing required packages: Java, wget, tar, lsof, net-tools"
+  apt install -y ${JAVA_PKG} wget tar lsof net-tools
+}
+
+create_user() {
+  if id -u ${NEXUS_USER} &>/dev/null; then
+    log "User ${NEXUS_USER} already exists"
+  else
+    log "Creating system user ${NEXUS_USER}"
+    useradd --system --no-create-home --shell /bin/false ${NEXUS_USER}
+  fi
+}
+
+download_nexus() {
+  log "Downloading Nexus ${NEXUS_VERSION} from ${DOWNLOAD_URL}"
+  wget -q "${DOWNLOAD_URL}" -O "${TMP_TAR}"
+}
+
+extract_nexus() {
+  log "Extracting Nexus to ${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}"
+  tar -xzf "${TMP_TAR}" -C /opt
+  # The extracted directory is likely named nexus-<version>
+  mv /opt/nexus-${NEXUS_VERSION} "${INSTALL_DIR}"
+}
+
+setup_directories() {
+  log "Setting up work directory"
+  mkdir -p "${WORK_DIR}"
+  chown -R ${NEXUS_USER}:${NEXUS_GROUP} "${WORK_DIR}"
+  chown -R ${NEXUS_USER}:${NEXUS_GROUP} "${INSTALL_DIR}"
+}
+
+configure_nexus_service() {
+  log "Configuring Nexus to run as service"
+
+  # Link to init.d (legacy)
+  ln -sf "${INSTALL_DIR}/bin/nexus" /etc/init.d/nexus
+  echo "run_as_user=\"${NEXUS_USER}\"" > "${INSTALL_DIR}/bin/nexus.rc"
+  chown root:root /etc/init.d/nexus
+  chmod 755 /etc/init.d/nexus
+
+  # systemd service unit
+  cat > "${SERVICE_FILE}" <<EOF
+[Unit]
+Description=Nexus Repository Manager
+After=network.target
+
+[Service]
+Type=forking
+LimitNOFILE=65536
+ExecStart=${INSTALL_DIR}/bin/nexus start
+ExecStop=${INSTALL_DIR}/bin/nexus stop
+User=${NEXUS_USER}
+Restart=on-abort
+# Provide a more graceful shutdown wait
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log "Reloading systemd daemon"
+  systemctl daemon-reload
+  systemctl enable nexus
+}
+
+start_nexus() {
+  log "Starting Nexus service"
+  systemctl start nexus
+  sleep 15  # wait for it to come up
+}
+
+verify_port() {
+  local port=8081
+  log "Verifying Nexus is listening on port ${port}..."
+  if lsof -i :"${port}" &>/dev/null || netstat -tuln | grep -q ":${port}"; then
+    log "✅ Nexus is listening on port ${port}"
+  else
+    log "❌ Nexus is NOT listening on port ${port}. Check logs in ${WORK_DIR}/logs"
+    exit 1
+  fi
+}
+
+print_admin_password() {
+  local pwfile="${WORK_DIR}/nexus3/admin.password"
+  log "Initial admin password (first startup) is in: ${pwfile}"
+  if [ -f "${pwfile}" ]; then
+    echo "  $(cat "${pwfile}")"
+  else
+    echo "  (password file not found yet — Nexus may still be initializing)"
+  fi
+}
+
+cleanup_tmp() {
+  rm -f "${TMP_TAR}"
+}
+
+# --- Main flow ---
+check_root
+install_packages
+create_user
+download_nexus
+extract_nexus
+setup_directories
+configure_nexus_service
+start_nexus
+verify_port
+print_admin_password
+cleanup_tmp
+
+log "Nexus installation (version ${NEXUS_VERSION}) completed."
+log "Access it via: http://<server_ip>:8081"
