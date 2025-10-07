@@ -1,0 +1,120 @@
+#!/bin/bash
+# ====================================================================
+# Nexus Repository OSS Automated Installation Script
+# Works on: Debian 12 / Ubuntu 22.04+
+# Author: Mudassir (Linuxandk8s)
+# ====================================================================
+
+set -e  # Exit immediately if a command exits with a non-zero status.
+
+NEXUS_VERSION="3.79.1-04"
+NEXUS_DOWNLOAD_URL="https://download.sonatype.com/nexus/3/nexus-${NEXUS_VERSION}-linux-x86_64.tar.gz"
+INSTALL_DIR="/opt"
+NEXUS_DIR="${INSTALL_DIR}/nexus-${NEXUS_VERSION}"
+NEXUS_SYMLINK="${INSTALL_DIR}/nexus"
+NEXUS_DATA_DIR="/opt/sonatype-work"
+NEXUS_USER="nexus"
+SERVICE_FILE="/etc/systemd/system/nexus.service"
+LOG_FILE="/var/log/nexus-install.log"
+
+log() {
+  echo "[ $(date '+%Y-%m-%d %H:%M:%S') ] $1" | tee -a "$LOG_FILE"
+}
+
+# --------------------------------------------------------------------
+# 1. Update & Install Dependencies
+# --------------------------------------------------------------------
+log "Updating package index..."
+apt-get update -y
+
+log "Installing required packages: Java, wget, tar, lsof, net-tools, ufw"
+apt-get install -y openjdk-17-jdk wget tar lsof net-tools ufw
+
+# --------------------------------------------------------------------
+# 2. Create Nexus User
+# --------------------------------------------------------------------
+if id "$NEXUS_USER" &>/dev/null; then
+  log "User $NEXUS_USER already exists."
+else
+  log "Creating user $NEXUS_USER..."
+  useradd -M -d "$NEXUS_DIR" -s /bin/bash "$NEXUS_USER"
+fi
+
+# --------------------------------------------------------------------
+# 3. Download and Extract Nexus
+# --------------------------------------------------------------------
+log "Cleaning up any existing Nexus installation..."
+rm -rf "$NEXUS_DIR" "$NEXUS_SYMLINK"
+
+log "Downloading Nexus $NEXUS_VERSION from $NEXUS_DOWNLOAD_URL"
+wget -q "$NEXUS_DOWNLOAD_URL" -O "/tmp/nexus-${NEXUS_VERSION}.tar.gz"
+
+log "Extracting Nexus to $INSTALL_DIR"
+tar -xzf "/tmp/nexus-${NEXUS_VERSION}.tar.gz" -C "$INSTALL_DIR"
+ln -s "$NEXUS_DIR" "$NEXUS_SYMLINK"
+
+# --------------------------------------------------------------------
+# 4. Set Permissions
+# --------------------------------------------------------------------
+log "Setting permissions for $NEXUS_USER"
+chown -R "$NEXUS_USER":"$NEXUS_USER" "$NEXUS_DIR" "$NEXUS_DATA_DIR" || true
+
+# --------------------------------------------------------------------
+# 5. Configure Nexus to Run as nexus User
+# --------------------------------------------------------------------
+log "Configuring Nexus run user"
+echo "run_as_user=\"$NEXUS_USER\"" > "$NEXUS_SYMLINK/bin/nexus.rc"
+
+# --------------------------------------------------------------------
+# 6. Create Systemd Service
+# --------------------------------------------------------------------
+log "Creating systemd service file at $SERVICE_FILE"
+
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Nexus Repository Manager
+After=network.target
+
+[Service]
+Type=forking
+LimitNOFILE=65536
+User=$NEXUS_USER
+Group=$NEXUS_USER
+ExecStart=$NEXUS_SYMLINK/bin/nexus start
+ExecStop=$NEXUS_SYMLINK/bin/nexus stop
+Restart=on-abort
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+log "Reloading systemd daemon and enabling Nexus service"
+systemctl daemon-reload
+systemctl enable nexus
+
+# --------------------------------------------------------------------
+# 7. Configure Firewall
+# --------------------------------------------------------------------
+log "Configuring firewall to allow port 8081"
+ufw allow 8081/tcp || true
+ufw --force enable || true
+
+# --------------------------------------------------------------------
+# 8. Start Nexus Service
+# --------------------------------------------------------------------
+log "Starting Nexus service..."
+systemctl start nexus
+
+sleep 10
+
+# --------------------------------------------------------------------
+# 9. Check Status
+# --------------------------------------------------------------------
+if systemctl is-active --quiet nexus; then
+  log "✅ Nexus installation successful and service is running!"
+  log "Access Nexus at: http://<your-server-ip>:8081"
+else
+  log "❌ Nexus service failed to start. Check logs:"
+  journalctl -u nexus -xe | tail -20
+  exit 1
+fi
