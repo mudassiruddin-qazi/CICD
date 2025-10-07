@@ -1,0 +1,21 @@
+Configure Nexus with Jenkins Server
+1. Create Docker Daemon Configuration
+Create or edit the Docker daemon configuration file: Command: 
+sudo nano /etc/docker/daemon.json 
+Add the following content: 
+{ "insecure-registries": ["136.113.46.39:8088"] } 
+Save and exit (Ctrl + O, Enter, Ctrl + X).
+2. Add Jenkins User to Docker Group
+Allow the current user (or Jenkins user) to run Docker commands: 
+sudo usermod -aG docker $USER 
+Apply the new group membership without logging out: 
+newgrp docker
+3. Restart Docker Service
+Restart the Docker daemon to apply the new configuration: sudo systemctl restart docker
+4. Verify Insecure Registry Configuration
+Check if the insecure registry is listed correctly: docker info | grep -A3 "Insecure
+Registries"
+5. Test Nexus Connectivity
+Try logging in to your Nexus Docker registry: docker login 136.113.46.39:8088 -u admin
+-p <password> If login succeeds, the Nexus Docker registry is successfully configured for your
+Jenkins server.
